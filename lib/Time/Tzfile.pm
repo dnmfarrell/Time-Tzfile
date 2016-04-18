@@ -10,22 +10,34 @@ use Config;
 
   use Time::Tzfile;
 
-  # will get 64bit timestamps if available
+  # get 64bit timestamps if available
   my $tzdata = Time::Tzfile->parse({filename => '/usr/share/zoneinfo/Europe/London'});
 
-  # will always get 32bit timestamps
+  # always get 32bit timestamps
   my $tzdata = Time::Tzfile->parse({
     filename        => '/usr/share/zoneinfo/Europe/London',
     use_version_one => 1,
   });
+
+  # get an unassembled raw parse of the file
+  my $tzdata = Time::Tzfile->parse_raw({
+    filename => '/usr/share/zoneinfo/Europe/London'});
+
 
 =head1 METHODS
 
 =head2 parse ({filename => /path/to/tzfile, use_version_one => 1})
 
 The C<parse> takes a hashref containing the filename of the tzfile to open
-and optionally a flag to use the version one (32bit) tzfile entry. Returns a
-hashref containing the tzfile data.
+and optionally a flag to use the version one (32bit) tzfile entry. Returns an
+arrayref of hashrefs:
+
+  {
+    epoch   => 1234566789, # offset begins here
+    offset  => 3600,       # offset in seconds
+    type    => GMT,        # official abbreviation
+    is_dst  => 0,          # is daylight saving bool
+  }
 
 Tzfiles can have two entries in them: the version one entry with 32bit timestamps
 and the version two entry with 64bit timestamps. If the tzfile has the version
@@ -33,151 +45,176 @@ two entry, and if C<perl> is compiled with 64bit support, this method will
 automatically return the version two entry. If you want to force the version one
 entry, include the C<use_version_one> flag in the method arguments.
 
-The hashref returned looks like this:
-
-  {
-    header         => {}, # version and counts for the body
-    transitions    => [], # historical timestamps when TZ changes occur
-    transition_idx => [], # index of ttinfo structs which apply to transitions
-    ttinfo_structs => [], # hashrefs of gmt offset, dst flag & the tz abbrev idx
-    tz_abbreviation=> $,  # scalar of tz abbreviations (GMT, BST etc)
-    leap_seconds   => [], # hashrefs of the timestamp & offset to apply leap secs
-    std_wall       => [], # arrayref of std wall clock indicators
-    gmt_local      => [], # arrayref of gm local indicators
-  }
-
-I believe that all binary tzfiles are compiled with UTC timestamps, in which case
-you can ignore C<std_wall> and C<gmt_local> entries for calculating offsets.
-
 See L<#SYNOPSIS> for examples.
+
+N.B. AFAIK all binary tzfiles are compiled with UTC timestamps, so this method
+ignores the leap, GMT and STD time entries for calculating offsets. If you
+want to include them, use L<#parse_raw> as an input to your own calculations.
 
 =cut
 
 sub parse {
   my ($class, $args) = @_;
 
+  my $tzdata = parse_raw($class, $args);
+
+  my $abbrev = $tzdata->[4][0];
+  # swap null char for pipe so length() works
+  $abbrev =~ s/\0/|/g;
+
+  my @timestamps = ();
+  for (0..$#{$tzdata->[2]})
+  {
+    my $struct = $tzdata->[3][ $tzdata->[2][$_] ];
+    my $abbr_substring = substr $abbrev, $struct->[2];
+    my ($abbrev, $junk) = split /\|/, $abbr_substring, 2;
+    push @timestamps, {
+      epoch => $tzdata->[1][$_],
+      offset=> $struct->[0],
+      is_dst=> $struct->[1],
+      type  => $abbrev,
+    };
+  }
+  return \@timestamps;
+}
+
+=head2 parse_raw ({filename => /path/to/tzfile, use_version_one => 1})
+
+This method reads the binary file into an arrayref of arrayrefs. Use this if
+you'd like to inspect the tzfile data, or use it as an input into your own
+programs.
+
+The arrayref looks like this:
+
+  [
+    header          # version and counts for the body
+    transitions     # historical timestamps when TZ changes occur
+    transition_idx  # index of ttinfo structs which apply to transitions
+    ttinfo_structs  # gmt offset, dst flag & the tz abbrev idx
+    tz_abbreviation # tz abbreviation string (EDT, GMT, BST etc)
+    leap_seconds    # timestamp & offset to apply leap secs
+    std_wall        # arrayref of std wall clock indicators
+    gmt_local       # arrayref of gm local indicators
+  ]
+
+=cut
+
+sub parse_raw {
+  my ($class, $args) = @_;
+
   open my $fh, '<:raw', $args->{filename};
   my $use_version_one = $args->{use_version_one};
   my $header = parse_header($fh);
 
-  if ($header->{version} == 2 # it will have the 64 bit entries
+  if ($header->[1] == 2 # it will have the 64 bit entries
       && !$use_version_one  # not forcing to 32bit timestamps
       && ($Config{use64bitint} eq 'define' # Perl is 64bit int capable
           || $Config{longsize} >= 8)
      ) {
 
-    # jump past the version one entry
+    # jump past the version one body
     skip_to_next_record($fh, $header);
 
-    return {
-      header          => $header,
-      transitions     => parse_time_counts_64($fh, $header),
-      transition_idx  => parse_time_type_indices($fh, $header),
-      ttinfo_structs  => parse_types($fh, $header),
-      tz_abbreviation => parse_timezone_abbrev($fh, $header),
-      leap_seconds    => parse_leap_seconds_64($fh, $header),
-      std_wall        => parse_std($fh, $header),
-      gmt_local       => parse_gmt($fh, $header),
-    };
+    # parse the v2 header
+    $header = parse_header($fh);
+
+    return [
+      $header,
+      parse_time_counts_64($fh, $header),
+      parse_time_type_indices($fh, $header),
+      parse_types($fh, $header),
+      parse_timezone_abbrev($fh, $header),
+      parse_leap_seconds_64($fh, $header),
+      parse_std($fh, $header),
+      parse_gmt($fh, $header),
+    ];
   }
   else {
-    return {
-      header          => $header,
-      transitions     => parse_time_counts($fh, $header),
-      transition_idx  => parse_time_type_indices($fh, $header),
-      ttinfo_structs  => parse_types($fh, $header),
-      tz_abbreviation => parse_timezone_abbrev($fh, $header),
-      leap_seconds    => parse_leap_seconds($fh, $header),
-      std_wall        => parse_std($fh, $header),
-      gmt_local       => parse_gmt($fh, $header),
-    };
+    return [
+      $header,
+      parse_time_counts($fh, $header),
+      parse_time_type_indices($fh, $header),
+      parse_types($fh, $header),
+      parse_timezone_abbrev($fh, $header),
+      parse_leap_seconds($fh, $header),
+      parse_std($fh, $header),
+      parse_gmt($fh, $header),
+    ];
   }
 }
 
 sub parse_bytes (*$@) {
-  my ($fh, $bytes_to_read, $template, @keys) = @_;
+  my ($fh, $bytes_to_read, $template) = @_;
 
-  my $bytes_read = sysread $fh, my($bytes), $bytes_to_read;
+  my $bytes_read = read $fh, my($bytes), $bytes_to_read;
   die "Expected $bytes_to_read bytes but got $bytes_read"
     unless $bytes_read == $bytes_to_read;
 
   return [] unless $template;
 
   my @data = unpack $template, $bytes;
-
-  if (@keys) {
-    die sprintf("Mapping mismatch, got %d keys and %d data variables\n",
-      scalar @keys, scalar @data) if @keys != @data;
-
-    push @keys, @data;
-    my @map = @keys[map { $_, $_ + @keys/2 } 0..(@keys/2 - 1)];
-    return \@map;
-  }
   return \@data;
 }
 
 sub parse_header {
   my ($fh) = @_;
-  my $header_arrayref = parse_bytes($fh, 44, 'a4 A x15 N N N N N N',
-    qw(intro version gmt_cnt std_cnt leap_cnt time_cnt type_cnt char_cnt));
+  my $header = parse_bytes($fh, 44, 'a4 A x15 N N N N N N');
 
   die 'This file does not appear to be a tzfile'
-    if $header_arrayref->[1] ne 'TZif';
+    if $header->[0] ne 'TZif';
 
-  # convert arrayref into hashref
-  my %header = @$header_arrayref;
-  return \%header;
+  return $header;
 }
 
 sub parse_time_counts {
   my ($fh, $header) = @_;
-  my $byte_count    =  4   * $header->{time_cnt};
-  my $template      = 'l>' x $header->{time_cnt};
+  my $byte_count    =  4   * $header->[5];
+  my $template      = 'l>' x $header->[5];
   return parse_bytes($fh, $byte_count, $template);
 }
 
 sub parse_time_counts_64 {
   my ($fh, $header) = @_;
-  my $byte_count    =  8  * $header->{time_cnt};
-  my $template      = 'q>' x $header->{time_cnt};
+  my $byte_count    =  8  * $header->[5];
+  my $template      = 'q>' x $header->[5];
   return parse_bytes($fh, $byte_count, $template);
 }
 
 sub parse_time_type_indices {
   my ($fh, $header) = @_;
-  my $byte_count    = 1   * $header->{time_cnt};
-  my $template      = 'C' x $header->{time_cnt};
+  my $byte_count    = 1   * $header->[5];
+  my $template      = 'C' x $header->[5];
   return parse_bytes($fh, $byte_count, $template);
 }
 
 sub parse_types {
   my ($fh, $header) = @_;
-  my $byte_count    = 6     * $header->{type_cnt};
-  my $template      = 'l>cC' x $header->{type_cnt};
+  my $byte_count    = 6     * $header->[6];
+  my $template      = 'l>cC' x $header->[6];
   my $data          = parse_bytes($fh, $byte_count, $template);
 
   my @mappings   = ();
   for (my $i = 0; $i < @$data-2; $i += 3) {
-    push @mappings, {
-      gmt_offset => $data->[$i],
-      is_dst     => $data->[$i + 1],
-      abbr_ind   => $data->[$i + 2],
-    };
+    push @mappings, [
+      $data->[$i],
+      $data->[$i + 1],
+      $data->[$i + 2],
+    ];
   }
   return \@mappings;
 }
 
 sub parse_timezone_abbrev {
   my ($fh, $header) = @_;
-  my $byte_count    = 1   * $header->{char_cnt};
-  my $template      = 'a' . $header->{char_cnt};
+  my $byte_count    = 1   * $header->[7];
+  my $template      = 'a' . $header->[7];
   return parse_bytes($fh, $byte_count, $template);
 }
 
 sub parse_leap_seconds {
   my ($fh, $header) = @_;
-  my $byte_count    = 8      * $header->{leap_cnt};
-  my $template      = 'l>l>' x $header->{leap_cnt};
+  my $byte_count    = 8      * $header->[4];
+  my $template      = 'l>l>' x $header->[4];
   my $data          = parse_bytes($fh, $byte_count, $template);
   my @mappings   = ();
   for (my $i = 0; $i < @$data-1; $i += 2) {
@@ -191,37 +228,45 @@ sub parse_leap_seconds {
 
 sub parse_leap_seconds_64 {
   my ($fh, $header) = @_;
-  my $byte_count    = 16      * $header->{leap_cnt};
-  my $template      = 'q>q>' x $header->{leap_cnt};
-  return parse_bytes($fh, $byte_count, $template);
+  my $byte_count    = 12     * $header->[4];
+  my $template      = 'q>l>' x $header->[4];
+  my $data          = parse_bytes($fh, $byte_count, $template);
+  my @mappings   = ();
+  for (my $i = 0; $i < @$data-1; $i += 2) {
+    push @mappings, [
+      $data->[$i],
+      $data->[$i + 1],
+    ];
+  }
+  return \@mappings;
 }
 
 sub parse_gmt {
   my ($fh, $header) = @_;
-  my $byte_count    = 1   * $header->{gmt_cnt};
-  my $template      = 'c' x $header->{gmt_cnt};
+  my $byte_count    = 1   * $header->[2];
+  my $template      = 'c' x $header->[2];
   return parse_bytes($fh, $byte_count, $template);
 }
 
 sub parse_std {
   my ($fh, $header) = @_;
-  my $byte_count    = 1   * $header->{std_cnt};
-  my $template      = 'c' x $header->{std_cnt};
+  my $byte_count    = 1   * $header->[3];
+  my $template      = 'c' x $header->[3];
   return parse_bytes($fh, $byte_count, $template);
 }
 
 sub skip_to_next_record {
   my ($fh, $header) = @_;
-  my $bytes_to_skip = 4 * $header->{time_cnt}
-                    + 1 * $header->{time_cnt}
-                    + 6 * $header->{type_cnt}
-                    + 1 * $header->{char_cnt}
-                    + 8 * $header->{leap_cnt}
-                    + 1 * $header->{gmt_cnt}
-                    + 1 * $header->{std_cnt}
-                    + 44; # next header (redundant)
+  my $bytes_to_skip = 4 * $header->[5]
+                    + 1 * $header->[5]
+                    + 6 * $header->[6]
+                    + 1 * $header->[7]
+                    + 8 * $header->[4]
+                    + 1 * $header->[2]
+                    + 1 * $header->[3];
   parse_bytes($fh, $bytes_to_skip);
 }
+
 
 1;
 __END__
@@ -233,6 +278,8 @@ __END__
 =item * L<DateTime::TimeZone> - automatically uses text versions of the Olsen db to calculate timezone offsets
 
 =item * L<DateTime::TimeZone::Tzfile> - applies TZ offsets from binary tzfiles to DateTime objects
+
+=item * L<Time::Zone::Olson> - another module for parsing Tzfiles
 
 =back
 

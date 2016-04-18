@@ -8,28 +8,39 @@ Time::Tzfile - reads a binary tzfile into a hashref
 
 =head1 VERSION
 
-version 0.01
+version 0.02
 
 =head1 SYNOPSIS
 
   use Time::Tzfile;
 
-  # will get 64bit timestamps if available
+  # get 64bit timestamps if available
   my $tzdata = Time::Tzfile->parse({filename => '/usr/share/zoneinfo/Europe/London'});
 
-  # will always get 32bit timestamps
+  # always get 32bit timestamps
   my $tzdata = Time::Tzfile->parse({
     filename        => '/usr/share/zoneinfo/Europe/London',
     use_version_one => 1,
   });
+
+  # get an unassembled raw parse of the file
+  my $tzdata = Time::Tzfile->parse_raw({
+    filename => '/usr/share/zoneinfo/Europe/London'});
 
 =head1 METHODS
 
 =head2 parse ({filename => /path/to/tzfile, use_version_one => 1})
 
 The C<parse> takes a hashref containing the filename of the tzfile to open
-and optionally a flag to use the version one (32bit) tzfile entry. Returns a
-hashref containing the tzfile data.
+and optionally a flag to use the version one (32bit) tzfile entry. Returns an
+arrayref of hashrefs:
+
+  {
+    epoch   => 1234566789, # offset begins here
+    offset  => 3600,       # offset in seconds
+    type    => GMT,        # official abbreviation
+    is_dst  => 0,          # is daylight saving bool
+  }
 
 Tzfiles can have two entries in them: the version one entry with 32bit timestamps
 and the version two entry with 64bit timestamps. If the tzfile has the version
@@ -37,23 +48,30 @@ two entry, and if C<perl> is compiled with 64bit support, this method will
 automatically return the version two entry. If you want to force the version one
 entry, include the C<use_version_one> flag in the method arguments.
 
-The hashref returned looks like this:
-
-  {
-    header         => {}, # version and counts for the body
-    transitions    => [], # historical timestamps when TZ changes occur
-    transition_idx => [], # index of ttinfo structs which apply to transitions
-    ttinfo_structs => [], # hashrefs of gmt offset, dst flag & the tz abbrev idx
-    tz_abbreviation=> $,  # scalar of tz abbreviations (GMT, BST etc)
-    leap_seconds   => [], # hashrefs of the timestamp & offset to apply leap secs
-    std_wall       => [], # arrayref of std wall clock indicators
-    gmt_local      => [], # arrayref of gm local indicators
-  }
-
-I believe that all binary tzfiles are compiled with UTC timestamps, in which case
-you can ignore C<std_wall> and C<gmt_local> entries for calculating offsets.
-
 See L<#SYNOPSIS> for examples.
+
+N.B. AFAIK all binary tzfiles are compiled with UTC timestamps, so this method
+ignores the leap, GMT and STD time entries for calculating offsets. If you
+want to include them, use L<#parse_raw> as an input to your own calculations.
+
+=head2 parse_raw ({filename => /path/to/tzfile, use_version_one => 1})
+
+This method reads the binary file into an arrayref of arrayrefs. Use this if
+you'd like to inspect the tzfile data, or use it as an input into your own
+programs.
+
+The arrayref looks like this:
+
+  [
+    header          # version and counts for the body
+    transitions     # historical timestamps when TZ changes occur
+    transition_idx  # index of ttinfo structs which apply to transitions
+    ttinfo_structs  # gmt offset, dst flag & the tz abbrev idx
+    tz_abbreviation # tz abbreviation string (EDT, GMT, BST etc)
+    leap_seconds    # timestamp & offset to apply leap secs
+    std_wall        # arrayref of std wall clock indicators
+    gmt_local       # arrayref of gm local indicators
+  ]
 
 =head1 SEE ALSO
 
@@ -62,6 +80,8 @@ See L<#SYNOPSIS> for examples.
 =item * L<DateTime::TimeZone> - automatically uses text versions of the Olsen db to calculate timezone offsets
 
 =item * L<DateTime::TimeZone::Tzfile> - applies TZ offsets from binary tzfiles to DateTime objects
+
+=item * L<Time::Zone::Olson> - another module for parsing Tzfiles
 
 =back
 
