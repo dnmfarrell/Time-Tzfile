@@ -1,10 +1,11 @@
-use autodie;
+package Time::Tzfile;
 use strict;
 use warnings;
-package Time::Tzfile;
 
+use autodie ':all';
 use Config;
-#ABSTRACT: reads a binary tzfile into a hashref
+
+#ABSTRACT: read binary tzfiles into Perl data structures
 
 =head1 SYNOPSIS
 
@@ -158,7 +159,7 @@ sub parse_bytes (*$@) {
 
 sub parse_header {
   my ($fh) = @_;
-  my $header = parse_bytes($fh, 44, 'a4 A x15 N N N N N N');
+  my $header = parse_bytes($fh, 44, 'a4 a x15 N N N N N N');
 
   die 'This file does not appear to be a tzfile'
     if $header->[0] ne 'TZif';

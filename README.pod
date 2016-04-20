@@ -4,11 +4,11 @@
 
 =head1 NAME
 
-Time::Tzfile - reads a binary tzfile into a hashref
+Time::Tzfile - read binary tzfiles into Perl data structures
 
 =head1 VERSION
 
-version 0.02
+version 0.03
 
 =head1 SYNOPSIS
 
