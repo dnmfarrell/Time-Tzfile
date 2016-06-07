@@ -2,7 +2,7 @@ package Time::Tzfile;
 use strict;
 use warnings;
 
-use autodie ':all';
+use autodie;
 use Config;
 
 #ABSTRACT: read binary tzfiles into Perl data structures
